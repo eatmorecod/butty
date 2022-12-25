@@ -1,4 +1,4 @@
-import keyboard
+from pynput import keyboard
 import serial
 import re
 from helpers_serial import position
@@ -6,9 +6,10 @@ from helpers_serial import position
 ser = serial.Serial('COM5', 38400, timeout=.1, parity='N')
 
 def convertFromDD(dd):
+    
     min = (dd % 1) * 60
     print(min)
-    ddmm = dd * 100 + min
+    ddmm = int(dd) * 100 + min
     print(ddmm) 
 
 is_gga = False
@@ -78,14 +79,19 @@ print(convertFromDD(mothership['lat']))
 mothership = position(mothership)
 print(mothership)
 
+# The event listener will be running in this block
+with keyboard.Events() as events:
+    for event in events:
+        if event.key == keyboard.Key.esc:
+            break
+        elif type(event) == keyboard.Events.Press:
+            if event.key == keyboard.Key.left:
+                mothership['cog'] -= 1
+            elif event.key == keyboard.Key.right:
+                mothership['cog'] += 1
+            if mothership['cog'] < 0:
+                mothership['cog'] += 360
+            if mothership['cog'] > 360:
+                mothership['cog'] -= 360
 
-
-
-
-
-
-
-
-
-
-
+            print(mothership['cog'])
