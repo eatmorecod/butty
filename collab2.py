@@ -3,7 +3,6 @@ from pynput import keyboard
 import serial
 import re
 from helpers_serial import position, make_checksum
-
 from math import radians, degrees
 from datetime import datetime
 from time import time
@@ -19,6 +18,7 @@ print('\n\
     ***  |||||||||   |||||||||      |||         |||          |||      ***\n\
     *********************************************************************\n\
     *********************************************************************\n')
+
 mothership = {
     'lat': 0.0,
     'lon': 0.0,
@@ -43,7 +43,6 @@ def convertFromDD(dd):
     
     dd = abs(dd)
     min = (dd % 1) * 60
-    #print(min)
     ddmm = int(dd) * 100 + min
     return round(ddmm, 4) 
 
@@ -86,25 +85,26 @@ if ser:
 
         if gga:
             list = line.split(',')
+            
+            # get latitude and convert from ddmm.mm to dd.dddd
             lat = float(list[2])
-            print(lat)
             deg = int(lat / 100)
             min = lat % deg
             lat = round(deg + (min / 60), 4)
-            mothership['lat'] = radians(lat)
-            #print(lat)
             
+            # convert to radians for position calculations
+            mothership['lat'] = radians(lat) 
             
+            #get longitude and convert from ddmm.mm to dd.dddd
             lon = float(list[4])
             deg = int(lon / 100)
             min = lon % deg
             lon = round(deg + (min / 60), 4)
-            #print(lon)
             if list[5] == "W":
                 lon *= -1
+            # Convert to radians for position calculations
             mothership['lon'] = radians(lon)
             
-
             is_gga = True  
 
         if hdt:
@@ -124,15 +124,6 @@ if ser:
 
     ser.close()
 
-    #print(mothership)
-    #print(degrees(mothership['lat']))
-    #print(degrees(mothership['lon']))
-    #print(convertFromDD(mothership['lat']))
-
-    #mothership = position(mothership)
-    #print(degrees(mothership['lat']))
-    #print(degrees(mothership['lon']))
-
 def getGGA():
     lat = convertFromDD(degrees(mothership['lat']))
     lon = convertFromDD(degrees(mothership['lon']))
@@ -146,10 +137,6 @@ def getHDG():
 def getVTG():
     msg = f'$GPVTG,{mothership["cog"]}.0,T,,M,{round(mothership["sog"])}.0,N,{round(mothership["sog"] * 1.852, 2)},K,D*'
     return msg + f'{make_checksum(msg):02x}'
-
-print(getGGA())
-print(getHDG())
-print(getVTG())
 
 # Open serial port to transmit mothership GPS
 try:
