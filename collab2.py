@@ -2,10 +2,12 @@ import sys
 from pynput import keyboard
 import serial
 import re
-from helpers_serial import position, make_checksum
+from helpers_serial import position, make_checksum, open_channel, close_channel
 from math import radians, degrees
 from datetime import datetime
-from time import time
+from time import time, sleep
+from canlib import canlib
+from canlib.canlib import ChannelData
 
 
 print('\n\
@@ -19,20 +21,59 @@ print('\n\
     *********************************************************************\n\
     *********************************************************************\n')
 
-mothership = {
-    'lat': 0.0,
-    'lon': 0.0,
-    'hdg': 0.0,
-    'cog': 0.0,
-    'sog': 0.0,
-    'distance': 100  
-}
-
-try:
-    ser = serial.Serial('COM5', 38400, timeout=.1, parity='N')
-except:
-    ser = None
-    print('COM5 not found')
+def nmea2k(ch):
+    ownship = {}
+    var = False
+    position = False
+    hdg = False
+    cog = True
+    while True:
+        try:
+            frame = ch.read(timeout=500)
+        except(canlib.canNoMsg) as ex:
+            pass
+        except(canlib.canError) as ex:
+            print(ex)
+        
+        pgn = (frame.id & 33554176)>>8 # Decode pgn from message identifier
+        data = []
+            
+         # Variation
+        if pgn == 0x1F11A:
+            for byte in frame.data:
+                data.append(byte)
+            var = f'{data[5]:02x}{data[4]:02x}'
+            if int(var, 16) > 0x0fff:
+                var = (int(var, 16) - 0xffff) * .0057
+        
+        # HEADING
+        if pgn == 0x1F112:
+            for byte in frame.data:
+                data.append(byte)
+            hdg = f'{data[2]:02x}{data[1]:02x}'
+            if data[7] == 253:
+                if var: 
+                    ownship['hdg'] = round((int(hdg, 16) * .0057) + var, 1)
+                    hdg = True
+            
+            else:
+                ownship['hdg'] = round((int(hdg, 16) * .0057), 1)
+                hdg = True
+                
+        # POSITION
+        if pgn == 0x1F801:
+            for byte in frame.data:
+                data.append(byte)
+            lat = f'{data[3]:02x}{data[2]:02x}{data[1]:02x}{data[0]:02x}'
+            lon = f'{data[7]:02x}{data[6]:02x}{data[5]:02x}{data[4]:02x}'
+            ownship["lat"] = radians(round(int(lat, 16) * 1 * 10** -7, 6))
+            if int(lon, 16) > int(0x0fffffff):
+                ownship['lon'] = radians(round((int(lon, 16) - int(0xffffffff)) * 1 * 10** -7, 6))
+            else:
+                ownship['lon'] = radians(round(int(lon, 16) * 1 * 10** -7, 6))             
+            position = True
+        if position == True and hdg == True and cog == True:
+            return ownship    
 
 def utcTime():
     # UTC Timestamp in hhmmss.ss format
@@ -69,81 +110,46 @@ def on_release(key):
         # Stop listener
         return False
 
-is_gga = False
-is_hdt = False
-
-input("Press enter to spawn mothership.")
-
-# Get Ownship GGA from ser
-if ser:
-    while not is_hdt or not is_gga: 
-        line = ser.readline().decode('utf-8', errors='ignore')
-        gga = re.search('GGA', line)
-        hdt = re.search('HDT', line)
-        hdg = re.search('HDG', line)
-        vhw = re.search('VHW', line)
-
-        if gga:
-            list = line.split(',')
-            
-            # get latitude and convert from ddmm.mm to dd.dddd
-            lat = float(list[2])
-            deg = int(lat / 100)
-            min = lat % deg
-            lat = round(deg + (min / 60), 4)
-            
-            # convert to radians for position calculations
-            mothership['lat'] = radians(lat) 
-            
-            #get longitude and convert from ddmm.mm to dd.dddd
-            lon = float(list[4])
-            deg = int(lon / 100)
-            min = lon % deg
-            lon = round(deg + (min / 60), 4)
-            if list[5] == "W":
-                lon *= -1
-            # Convert to radians for position calculations
-            mothership['lon'] = radians(lon)
-            
-            is_gga = True  
-
-        if hdt:
-            list = line.split(',')  
-            mothership['hdg'] = float(list[1])
-            is_hdt = True
-
-        if hdg:
-            list = line.split(',')  
-            mothership['hdg'] = float(list[1]) - float(list[4])
-            is_hdt = True
-
-        '''if vhw:
-            list = line.split(',')
-            heading = float(list[1])
-            is_hdt = True'''
-
-    ser.close()
 
 def getGGA():
     lat = convertFromDD(degrees(mothership['lat']))
     lon = convertFromDD(degrees(mothership['lon']))
-    msg = f'$GPGGA,{utcTime()},{lat},N,{lon},W,2,28,0.61,-24.72,M,-33.13,M,,*'
-    return msg + f'{make_checksum(msg):02x}'
+    msg = f'$GPGGA,{utcTime()},{lat},N,0{lon},W,2,28,0.61,-24.72,M,-33.13,M,,*'
+    return msg + f'{make_checksum(msg):02x}\n'
 
 def getHDG():
-    msg = f'$HCHDG,{mothership["hdg"]}.0,,,,*'
-    return msg + f'{make_checksum(msg):02x}'
+    msg = f'$HCHDT,{round(mothership["hdg"])}.0,T*'
+    return msg + f'{make_checksum(msg):02x}\n'
 
 def getVTG():
-    msg = f'$GPVTG,{mothership["cog"]}.0,T,,M,{round(mothership["sog"])}.0,N,{round(mothership["sog"] * 1.852, 2)},K,D*'
-    return msg + f'{make_checksum(msg):02x}'
+    msg = f'$GPVTG,{round(mothership["cog"])}.0,T,,M,{round(round(mothership["sog"]))}.0,N,{round(mothership["sog"] * 1.852, 2)},K,D*'
+    return msg + f'{make_checksum(msg):02x}\n'
+
+def getZDA():
+    msg = f'$GPZDA,{utcTime()},{datetime.utcnow().strftime("%d,%m,%Y")},00,01*'
+    return msg + f'{make_checksum(msg):02x}\n'
+
+input('Press enter to spawn mothership:')
+
+try:
+    ch0 = open_channel(0) # Initialize CAN channel to receive position data
+    mothership = nmea2k(ch0)
+    mothership['sog'] = 0.0
+    mothership['cog'] = mothership['hdg']
+    mothership['distance'] = 50
+    close_channel(ch0)
+
+except:
+    print("Unable to initialize CAN channel.  Opening serial port.")
+    ch0 = None
 
 # Open serial port to transmit mothership GPS
 try:
-    serTx = serial.Serial('COM6', 38400, timeout=.1, parity='N')
+    serTx = serial.Serial('COM5', 38400, timeout=.1, parity='N')
 except:
     serTx = None
-    print('COM6 not found')
+    print('COM5 not found')
+
 
 # Start non-blocking keyboard listener to update heading and speed
 listener = keyboard.Listener(
@@ -156,16 +162,12 @@ timeOfLastMsg = time()
 while listener.running:
     # Send Mothership GGA, HDT, VTG messages every .2 sec
     if timeOfLastMsg + .2 <= time():
-        mothership['distance'] = (mothership['sog'] / 1.944) * (time() - timeOfLastMsg)
-        mothership['cog'] = mothership['hdg']
         mothership = position(mothership)
-        serTx.write(getGGA().encode('utf-8', errors='ignore'))
-        serTx.write(getHDG().encode('utf-8', errors='ignore'))
-        serTx.write(getVTG().encode('utf-8', errors='ignore'))
-        #sys.stdout.write(f'\rHEADING: {int(mothership["hdg"]):0=3d}°\tSPEED(kn): {int(mothership["sog"]):<2d}\tTIME: {utcTime()}')  
+        serTx.write(f'{getGGA()}{getHDG()}{getVTG()}{getZDA()}\r'.encode('utf-8', errors='ignore'))
+        serTx.flush()
+        mothership['distance'] = (mothership['sog'] / 1.944) * .2 #(time() - timeOfLastMsg)
+        mothership['cog'] = mothership['hdg']       
+        sys.stdout.write(f'\rHEADING: {int(mothership["hdg"]):0=3d}°\tSPEED(kn): {int(mothership["sog"]):<2d}\tTIME: {utcTime()}')  
         timeOfLastMsg = time()
-        print(getGGA())
-        print(getHDG())
-        print(getVTG())
-
+        
 serTx.close()
